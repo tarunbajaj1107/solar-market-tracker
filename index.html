@@ -1,0 +1,657 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, 
+  Tooltip, Legend, ResponsiveContainer, AreaChart, Area 
+} from 'recharts';
+import { 
+  TrendingUp, TrendingDown, DollarSign, Cpu, Battery, Zap, 
+  Layers, RefreshCw, Download, Globe, ShieldCheck, Anchor, 
+  Calculator, ChevronRight, FileText, ExternalLink, Activity, 
+  Sun, CheckCircle2, AlertTriangle, ArrowUpRight
+} from 'lucide-react';
+
+// Default initial datasets (Mocking latest weekly pipeline output as of late 2026)
+const INITIAL_BENCHMARKS = {
+  lastUpdated: "2026-11-01",
+  fobChina: [
+    { component: "Polysilicon (N-type)", unit: "RMB/kg", spotMin: 40.0, spotMax: 43.0, avgUsd: 5.80, trend: "Stable", changePct: 0.0 },
+    { component: "N-Type Wafer (183mm)", unit: "RMB/pc", spotMin: 0.95, spotMax: 1.00, avgUsd: 0.133, trend: "Subdued", changePct: -1.2 },
+    { component: "N-Type Wafer (210mm)", unit: "RMB/pc", spotMin: 1.10, spotMax: 1.15, avgUsd: 0.155, trend: "Stable", changePct: 0.0 },
+    { component: "TOPCon Cell (183mm)", unit: "RMB/Wp", spotMin: 0.29, spotMax: 0.30, avgUsd: 0.041, trend: "Holding", changePct: 0.5 },
+    { component: "TOPCon Cell (210mm)", unit: "RMB/Wp", spotMin: 0.295, spotMax: 0.30, avgUsd: 0.042, trend: "Upward", changePct: 1.4 },
+    { component: "TOPCon Module (FOB China)", unit: "USD/Wp", spotMin: 0.090, spotMax: 0.098, avgUsd: 0.094, trend: "Bottoming", changePct: 0.2 },
+  ],
+  indianDomestic: [
+    { component: "Non-DCR TOPCon Module (560-580W)", unit: "INR/Wp", inrMin: 13.90, inrMax: 14.30, usdAvg: 0.165, segment: "Utility Scale" },
+    { component: "Non-DCR Mono PERC (540-550W)", unit: "INR/Wp", inrMin: 13.50, inrMax: 13.80, usdAvg: 0.160, segment: "Utility Scale" },
+    { component: "DCR TOPCon Module (Domestic Cell)", unit: "INR/Wp", inrMin: 21.80, inrMax: 22.30, usdAvg: 0.260, segment: "DCR Mandatory" },
+    { component: "Central Inverter (3MW+)", unit: "INR/kW", inrMin: 2100, inrMax: 2400, usdAvg: 25.20, segment: "BOS Utility" },
+    { component: "String Inverter (100kW+)", unit: "INR/kW", inrMin: 2800, inrMax: 3200, usdAvg: 33.60, segment: "Commercial / Rooftop" }
+  ],
+  rawMaterials: [
+    { name: "Silver Spot (Metallization Paste)", symbol: "SI=F", price: "57.85", unit: "USD / troy oz", localInr: "1,62,400 / kg", impact: "High (Cell Cost)" },
+    { name: "Copper Futures (DC Cabling)", symbol: "HG=F", price: "4.42", unit: "USD / lb", localInr: "815 / kg", impact: "Medium (BOS)" },
+    { name: "Aluminum (Module Frames / Structures)", symbol: "ALI=F", price: "2,610", unit: "USD / MT", localInr: "238 / kg", impact: "Medium (Frames)" },
+    { name: "USD / INR Exchange Rate", symbol: "USDINR=X", price: "84.25", unit: "INR per USD", localInr: "84.25", impact: "Direct Import Conversion" }
+  ],
+  priceHistory: [
+    { month: "Jun 26", fobChinaTopcon: 0.102, dcrTopconInr: 23.50, nonDcrTopconInr: 15.10, silverUsd: 52.1 },
+    { month: "Jul 26", fobChinaTopcon: 0.099, dcrTopconInr: 23.10, nonDcrTopconInr: 14.80, silverUsd: 54.3 },
+    { month: "Aug 26", fobChinaTopcon: 0.096, dcrTopconInr: 22.80, nonDcrTopconInr: 14.50, silverUsd: 55.0 },
+    { month: "Sep 26", fobChinaTopcon: 0.095, dcrTopconInr: 22.50, nonDcrTopconInr: 14.20, silverUsd: 56.4 },
+    { month: "Oct 26", fobChinaTopcon: 0.094, dcrTopconInr: 22.10, nonDcrTopconInr: 14.05, silverUsd: 57.2 },
+    { month: "Nov 26", fobChinaTopcon: 0.094, dcrTopconInr: 22.05, nonDcrTopconInr: 14.10, silverUsd: 57.85 }
+  ]
+};
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('overview');
+  const [usdInr, setUsdInr] = useState(84.25);
+  
+  // Landed Cost Calculator State
+  const [fobPriceUsd, setFobPriceUsd] = useState(0.094); // USD/Wp
+  const [bcdRate, setBcdRate] = useState(20.0); // 20% Basic Customs Duty
+  const [aidcRate, setAidcRate] = useState(0.0); // Agriculture Infrastructure Dev Cess (0% for modules standard, or custom)
+  const [igstRate, setIgstRate] = useState(5.0); // 5% IGST
+  const [freightUsdPerContainer, setFreightUsdPerContainer] = useState(1250); // $1250 per 40ft container
+  const [wattsPerContainer, setWattsPerContainer] = useState(620000); // ~620kWp per container
+  const [portHandlingInrWp, setPortHandlingInrWp] = useState(0.15); // INR/Wp handling & inland transport
+
+  // Dynamic Landed Cost Calculations
+  const calculatedLanded = useMemo(() => {
+    const freightPerWattUsd = freightUsdPerContainer / wattsPerContainer;
+    const cifPriceUsd = fobPriceUsd + freightPerWattUsd;
+    const cifPriceInr = cifPriceUsd * usdInr;
+
+    const bcdAmount = cifPriceInr * (bcdRate / 100);
+    const aidcAmount = cifPriceInr * (aidcRate / 100);
+    const totalDutyBase = cifPriceInr + bcdAmount + aidcAmount;
+    
+    const igstAmount = totalDutyBase * (igstRate / 100);
+    
+    const landedBeforeLocal = totalDutyBase + igstAmount;
+    const finalLandedInrPerWatt = landedBeforeLocal + portHandlingInrWp;
+    const finalLandedUsdPerWatt = finalLandedInrPerWatt / usdInr;
+
+    return {
+      freightPerWattUsd: freightPerWattUsd.toFixed(4),
+      cifPriceUsd: cifPriceUsd.toFixed(4),
+      cifPriceInr: cifPriceInr.toFixed(2),
+      bcdAmount: bcdAmount.toFixed(2),
+      aidcAmount: aidcAmount.toFixed(2),
+      igstAmount: igstAmount.toFixed(2),
+      finalLandedInrPerWatt: finalLandedInrPerWatt.toFixed(2),
+      finalLandedUsdPerWatt: finalLandedUsdPerWatt.toFixed(3),
+      dutyPercentageEffective: (((finalLandedInrPerWatt - cifPriceInr) / cifPriceInr) * 100).toFixed(1)
+    };
+  }, [fobPriceUsd, bcdRate, aidcRate, igstRate, freightUsdPerContainer, wattsPerContainer, portHandlingInrWp, usdInr]);
+
+  // Export raw JSON pipeline output
+  const handleExportJSON = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(INITIAL_BENCHMARKS, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `solar_market_data_${INITIAL_BENCHMARKS.lastUpdated}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-amber-500 selection:text-slate-950">
+      {/* Top Navigation Header */}
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            <div className="flex items-center space-x-3">
+              <div className="p-2 bg-gradient-to-tr from-amber-500 to-orange-600 rounded-xl text-slate-950 font-bold shadow-lg shadow-orange-500/20">
+                <Sun className="h-6 w-6 stroke-[2.5]" />
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h1 className="text-lg font-bold tracking-tight text-white">SolarPulse India</h1>
+                  <span className="px-2 py-0.5 text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full">
+                    LIVE INTEL
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">PV Supply Chain & Import Cost Benchmark Dashboard</p>
+              </div>
+            </div>
+
+            {/* Actions & Last Refreshed */}
+            <div className="flex items-center space-x-3">
+              <div className="hidden sm:flex items-center space-x-2 bg-slate-800/60 px-3 py-1.5 rounded-lg border border-slate-700/50 text-xs text-slate-300">
+                <Activity className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                <span>Updated: <strong className="text-white">{INITIAL_BENCHMARKS.lastUpdated}</strong></span>
+              </div>
+
+              <button 
+                onClick={handleExportJSON}
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-medium text-slate-200 transition"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export JSON</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Tab Navigation */}
+          <div className="flex space-x-6 overflow-x-auto border-t border-slate-800/50 no-scrollbar">
+            {[
+              { id: 'overview', label: 'Market Overview', icon: Globe },
+              { id: 'calculator', label: 'Import Landed Calculator', icon: Calculator },
+              { id: 'upstream', label: 'China FOB & Cell Spot', icon: Cpu },
+              { id: 'domestic', label: 'India DCR vs Non-DCR', icon: ShieldCheck },
+              { id: 'github', label: 'GitHub Scraper Setup', icon: FileText }
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center space-x-2 py-3 px-1 border-b-2 text-xs sm:text-sm font-medium whitespace-nowrap transition ${
+                    isActive 
+                      ? 'border-amber-500 text-amber-400' 
+                      : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-amber-400' : 'text-slate-400'}`} />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+
+        {/* TAB 1: OVERVIEW */}
+        {activeTab === 'overview' && (
+          <>
+            {/* Top KPI Metrics Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 relative overflow-hidden group hover:border-slate-700 transition">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">TOPCon FOB China</p>
+                    <h3 className="text-2xl font-bold text-white mt-1">$0.094 <span className="text-xs text-slate-400 font-normal">/ Wp</span></h3>
+                  </div>
+                  <div className="p-2.5 bg-blue-500/10 text-blue-400 rounded-lg">
+                    <Globe className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center text-xs text-emerald-400 space-x-1">
+                  <TrendingDown className="w-3.5 h-3.5" />
+                  <span>Bottoming Out (RMB 0.68/Wp)</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 relative overflow-hidden group hover:border-slate-700 transition">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">India Landed (Non-DCR)</p>
+                    <h3 className="text-2xl font-bold text-white mt-1">₹14.10 <span className="text-xs text-slate-400 font-normal">/ Wp</span></h3>
+                  </div>
+                  <div className="p-2.5 bg-amber-500/10 text-amber-400 rounded-lg">
+                    <Anchor className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center text-xs text-slate-400 space-x-1">
+                  <span>Incl. 20% BCD + 5% IGST + Freight</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 relative overflow-hidden group hover:border-slate-700 transition">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">DCR Module Premium</p>
+                    <h3 className="text-2xl font-bold text-amber-400 mt-1">₹22.05 <span className="text-xs text-slate-400 font-normal">/ Wp</span></h3>
+                  </div>
+                  <div className="p-2.5 bg-emerald-500/10 text-emerald-400 rounded-lg">
+                    <ShieldCheck className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center text-xs text-amber-400/90 space-x-1">
+                  <span>+56.3% over Non-DCR Landed</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 relative overflow-hidden group hover:border-slate-700 transition">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">Silver Spot Benchmark</p>
+                    <h3 className="text-2xl font-bold text-white mt-1">$57.85 <span className="text-xs text-slate-400 font-normal">/ oz</span></h3>
+                  </div>
+                  <div className="p-2.5 bg-purple-500/10 text-purple-400 rounded-lg">
+                    <Zap className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center text-xs text-rose-400 space-x-1">
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  <span>High Metallization Cost Driver</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Historical Price Trend Chart */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-amber-400" />
+                    Indian Solar Module Price Trend (2026 H2)
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">Tracking Indian DCR vs Non-DCR landed quotes alongside FOB China benchmarks</p>
+                </div>
+                <div className="flex items-center space-x-3 text-xs">
+                  <span className="flex items-center gap-1.5 text-slate-300">
+                    <span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span> DCR TOPCon (INR/Wp)
+                  </span>
+                  <span className="flex items-center gap-1.5 text-slate-300">
+                    <span className="w-3 h-3 rounded-full bg-blue-500 inline-block"></span> Non-DCR Landed (INR/Wp)
+                  </span>
+                </div>
+              </div>
+
+              <div className="h-72 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={INITIAL_BENCHMARKS.priceHistory} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="colorDcr" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                      </linearGradient>
+                      <linearGradient id="colorNonDcr" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                    <XAxis dataKey="month" stroke="#64748b" tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                    <YAxis stroke="#64748b" tick={{ fill: '#94a3b8', fontSize: 12 }} domain={[10, 26]} />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc' }}
+                      formatter={(value) => [`₹${value} / Wp`, '']}
+                    />
+                    <Area type="monotone" dataKey="dcrTopconInr" name="DCR Module Price" stroke="#f59e0b" fillOpacity={1} fill="url(#colorDcr)" strokeWidth={2} />
+                    <Area type="monotone" dataKey="nonDcrTopconInr" name="Non-DCR Landed" stroke="#3b82f6" fillOpacity={1} fill="url(#colorNonDcr)" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Raw Material Commodities Summary */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+              <h2 className="text-base font-bold text-white mb-4 flex items-center gap-2">
+                <Layers className="w-4 h-4 text-emerald-400" />
+                Raw Material & Metallization Paste Benchmarks
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {INITIAL_BENCHMARKS.rawMaterials.map((mat, idx) => (
+                  <div key={idx} className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-4">
+                    <div className="flex justify-between items-start">
+                      <span className="text-xs text-slate-400 font-medium">{mat.name}</span>
+                      <span className="text-[10px] font-mono bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded">{mat.symbol}</span>
+                    </div>
+                    <div className="mt-2 flex items-baseline justify-between">
+                      <span className="text-xl font-bold text-white">{mat.price}</span>
+                      <span className="text-xs text-slate-400">{mat.unit}</span>
+                    </div>
+                    <div className="mt-3 pt-2 border-t border-slate-800/60 flex justify-between items-center text-xs">
+                      <span className="text-slate-500">Local INR:</span>
+                      <span className="text-slate-300 font-mono font-medium">₹{mat.localInr}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* TAB 2: LANDED COST CALCULATOR */}
+        {activeTab === 'calculator' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            {/* Input Controls */}
+            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-5">
+              <div>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Calculator className="w-5 h-5 text-amber-400" />
+                  Custom Duty & Landed Cost Simulator
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Adjust FOB prices, customs duties (BCD/AIDC), IGST, and freight costs to calculate landed price at JNPT / Mundra ports.
+                </p>
+              </div>
+
+              <div className="space-y-4 pt-2">
+                <div>
+                  <label className="flex justify-between text-xs font-semibold text-slate-300 mb-1.5">
+                    <span>FOB China Module Price</span>
+                    <span className="text-amber-400">${fobPriceUsd} / Wp</span>
+                  </label>
+                  <input 
+                    type="range" 
+                    min="0.070" 
+                    max="0.150" 
+                    step="0.001"
+                    value={fobPriceUsd} 
+                    onChange={(e) => setFobPriceUsd(parseFloat(e.target.value))}
+                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                    <span>$0.070</span>
+                    <span>$0.110 (Current Avg)</span>
+                    <span>$0.150</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Basic Customs Duty (BCD)</label>
+                    <div className="relative">
+                      <input 
+                        type="number" 
+                        value={bcdRate}
+                        onChange={(e) => setBcdRate(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-amber-500 focus:outline-none"
+                      />
+                      <span className="absolute right-3 top-2.5 text-xs text-slate-500">%</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">IGST Rate</label>
+                    <div className="relative">
+                      <input 
+                        type="number" 
+                        value={igstRate}
+                        onChange={(e) => setIgstRate(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-amber-500 focus:outline-none"
+                      />
+                      <span className="absolute right-3 top-2.5 text-xs text-slate-500">%</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Freight (40ft Container)</label>
+                    <div className="relative">
+                      <input 
+                        type="number" 
+                        value={freightUsdPerContainer}
+                        onChange={(e) => setFreightUsdPerContainer(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-amber-500 focus:outline-none"
+                      />
+                      <span className="absolute right-3 top-2.5 text-xs text-slate-500">USD</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Watts per Container</label>
+                    <input 
+                      type="number" 
+                      value={wattsPerContainer}
+                      onChange={(e) => setWattsPerContainer(parseFloat(e.target.value) || 1)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1">Exchange Rate (USD/INR)</label>
+                  <input 
+                    type="number" 
+                    step="0.05"
+                    value={usdInr}
+                    onChange={(e) => setUsdInr(parseFloat(e.target.value) || 1)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Calculations Breakdown Output */}
+            <div className="lg:col-span-7 space-y-6">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Landed Cost Summary</h3>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                  <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-4">
+                    <span className="text-xs text-slate-400">Total Landed Price (INR)</span>
+                    <div className="text-3xl font-extrabold text-amber-400 mt-1">
+                      ₹{calculatedLanded.finalLandedInrPerWatt} <span className="text-sm font-normal text-slate-400">/ Wp</span>
+                    </div>
+                    <span className="text-[11px] text-slate-500 mt-1 block">Includes Port Clearance & Inland Freight</span>
+                  </div>
+
+                  <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-4">
+                    <span className="text-xs text-slate-400">Total Landed Price (USD)</span>
+                    <div className="text-3xl font-extrabold text-white mt-1">
+                      ${calculatedLanded.finalLandedUsdPerWatt} <span className="text-sm font-normal text-slate-400">/ Wp</span>
+                    </div>
+                    <span className="text-[11px] text-emerald-400 mt-1 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" /> Effective Duty Impact: +{calculatedLanded.dutyPercentageEffective}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* Detailed Line Item Table */}
+                <div className="border border-slate-800 rounded-lg overflow-hidden">
+                  <table className="w-full text-left text-xs text-slate-300">
+                    <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3">Cost Layer</th>
+                        <th className="py-2.5 px-3">USD / Wp</th>
+                        <th className="py-2.5 px-3">INR / Wp</th>
+                        <th className="py-2.5 px-3">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-mono">
+                      <tr>
+                        <td className="py-2.5 px-3 font-sans text-slate-200">FOB China Base Quote</td>
+                        <td className="py-2.5 px-3">${fobPriceUsd.toFixed(4)}</td>
+                        <td className="py-2.5 px-3">₹{(fobPriceUsd * usdInr).toFixed(2)}</td>
+                        <td className="py-2.5 px-3 font-sans text-slate-500">Ex-factory Chinese Port</td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-3 font-sans text-slate-200">Ocean Freight + Insurance</td>
+                        <td className="py-2.5 px-3">${calculatedLanded.freightPerWattUsd}</td>
+                        <td className="py-2.5 px-3">₹{(calculatedLanded.freightPerWattUsd * usdInr).toFixed(2)}</td>
+                        <td className="py-2.5 px-3 font-sans text-slate-500">${freightUsdPerContainer}/40ft FEU</td>
+                      </tr>
+                      <tr className="bg-slate-950/40 font-semibold">
+                        <td className="py-2.5 px-3 font-sans text-amber-400">CIF Landed Value</td>
+                        <td className="py-2.5 px-3">${calculatedLanded.cifPriceUsd}</td>
+                        <td className="py-2.5 px-3">₹{calculatedLanded.cifPriceInr}</td>
+                        <td className="py-2.5 px-3 font-sans text-slate-400">Base for Duty Levy</td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-3 font-sans text-slate-200">Basic Customs Duty ({bcdRate}%)</td>
+                        <td className="py-2.5 px-3">${(calculatedLanded.bcdAmount / usdInr).toFixed(4)}</td>
+                        <td className="py-2.5 px-3">₹{calculatedLanded.bcdAmount}</td>
+                        <td className="py-2.5 px-3 font-sans text-slate-500">Applied on CIF Value</td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-3 font-sans text-slate-200">Integrated GST ({igstRate}%)</td>
+                        <td className="py-2.5 px-3">${(calculatedLanded.igstAmount / usdInr).toFixed(4)}</td>
+                        <td className="py-2.5 px-3">₹{calculatedLanded.igstAmount}</td>
+                        <td className="py-2.5 px-3 font-sans text-slate-500">Levied on (CIF + BCD)</td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-3 font-sans text-slate-200">Port Handling & Logistics</td>
+                        <td className="py-2.5 px-3">${(portHandlingInrWp / usdInr).toFixed(4)}</td>
+                        <td className="py-2.5 px-3">₹{portHandlingInrWp.toFixed(2)}</td>
+                        <td className="py-2.5 px-3 font-sans text-slate-500">Cha & Local Clearance</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: CHINA FOB & CELL SPOT TABLE */}
+        {activeTab === 'upstream' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-blue-400" />
+                  Chinese Export Spot Index (Polysilicon, Wafer, Cell & FOB Module)
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">Weekly quotes aggregated from InfoLink Consulting & Shanghai Metals Market</p>
+              </div>
+              <span className="text-xs bg-slate-800 text-slate-300 px-3 py-1 rounded-full border border-slate-700 w-fit">
+                Base Currency: RMB / USD
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm text-slate-300">
+                <thead className="bg-slate-950 text-slate-400 text-xs uppercase tracking-wider border-b border-slate-800">
+                  <tr>
+                    <th className="py-3 px-4">Component Grade</th>
+                    <th className="py-3 px-4">Unit</th>
+                    <th className="py-3 px-4">Min Quote</th>
+                    <th className="py-3 px-4">Max Quote</th>
+                    <th className="py-3 px-4">Avg (USD Equivalent)</th>
+                    <th className="py-3 px-4">Weekly Trend</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60 font-mono">
+                  {INITIAL_BENCHMARKS.fobChina.map((item, idx) => (
+                    <tr key={idx} className="hover:bg-slate-850 transition">
+                      <td className="py-3.5 px-4 font-sans font-medium text-white">{item.component}</td>
+                      <td className="py-3.5 px-4 text-xs text-slate-400 font-sans">{item.unit}</td>
+                      <td className="py-3.5 px-4">{item.spotMin.toFixed(2)}</td>
+                      <td className="py-3.5 px-4">{item.spotMax.toFixed(2)}</td>
+                      <td className="py-3.5 px-4 font-bold text-amber-400">
+                        ${item.avgUsd < 1 ? item.avgUsd.toFixed(3) : item.avgUsd.toFixed(2)}
+                      </td>
+                      <td className="py-3.5 px-4 font-sans">
+                        <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${
+                          item.changePct > 0 
+                            ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' 
+                            : item.changePct < 0 
+                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                            : 'bg-slate-800 text-slate-400'
+                        }`}>
+                          {item.trend} ({item.changePct > 0 ? `+${item.changePct}%` : `${item.changePct}%`})
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: DOMESTIC INDIAN MARKET */}
+        {activeTab === 'domestic' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  Indian Domestic Solar PV & BOS Benchmark (Ex-Works)
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">Domestic Content Requirement (DCR) vs Non-DCR Modules & Central/String Inverters</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {INITIAL_BENCHMARKS.indianDomestic.map((dom, idx) => (
+                <div key={idx} className="bg-slate-950 border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition space-y-3">
+                  <div className="flex justify-between items-start">
+                    <span className="text-xs font-semibold px-2 py-0.5 bg-slate-800 text-amber-400 rounded-md border border-slate-700">
+                      {dom.segment}
+                    </span>
+                    <span className="text-[11px] text-slate-500 font-mono">{dom.unit}</span>
+                  </div>
+
+                  <div>
+                    <h3 className="text-sm font-bold text-white">{dom.component}</h3>
+                    <div className="text-2xl font-extrabold text-amber-400 mt-2 font-mono">
+                      ₹{dom.inrMin} - ₹{dom.inrMax}
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800/80 flex justify-between items-center text-xs text-slate-400">
+                    <span>USD Equivalent:</span>
+                    <span className="font-mono text-slate-200 font-medium">${dom.usdAvg} / unit</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: GITHUB ACTION HOSTING TUTORIAL */}
+        {activeTab === 'github' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <FileText className="w-4 h-4 text-amber-400" />
+                Hosting & Automated Scraper Deployment Guide
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">Follow these steps to schedule weekly automated price updates via GitHub Actions</p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-4">
+                <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-2">1. Directory Structure</h3>
+                <pre className="bg-slate-900 p-3 rounded text-xs font-mono text-slate-300 overflow-x-auto">
+{`.
+├── .github/
+│   └── workflows/
+│       └── scrape.yml        # GitHub Action cron schedule
+├── data/
+│   └── latest_prices.json   # Auto-committed dataset output
+├── scraper.py               # Python scraper script (InfoLink, Yahoo Finance)
+└── index.html               # React web application`}
+                </pre>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-4">
+                <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-2">2. Workflow Configuration (`.github/workflows/scrape.yml`)</h3>
+                <pre className="bg-slate-900 p-3 rounded text-xs font-mono text-slate-300 overflow-x-auto">
+{`name: Update Solar Market Data
+
+on:
+  schedule:
+    - cron: '0 2 * * 1' # Runs every Monday at 02:00 UTC
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  scrape-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 yfinance pandas
+      - name: Execute Scraper
+        run: python scraper.py
+      - name: Auto-commit updated data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Auto-update solar pricing benchmarks [skip ci]"
+          file_pattern: "data/*.json"`}
+                </pre>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </main>
+    </div>
+  );
+}
